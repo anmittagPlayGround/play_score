@@ -1,0 +1,176 @@
+name: Bug Progress Tracker
+
+on:
+  schedule:
+    # Run once a day at 00:00 UTC
+    - cron: '0 0 * * *'
+  workflow_dispatch: # Allows manual trigger
+
+jobs:
+  track_bugs:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # Needed to create/upload artifacts
+      issues: read    # Needed to read issues
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Install dependencies
+        run: pip install PyGithub pandas
+
+      - name: Get GitHub Bug Data
+        id: get_bug_data
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # Automatically provided by GitHub
+          MAIN_REPOSITORY: 'anmittagPlayGround/play_score' # IMPORTANT: Replace with your main repository
+          SUB_REPOSITORIES: 'anmittagPlayGround/play_communication,anmittagPlayGround/play_persistency,anmittagPlayGround/play_baselibs' # IMPORTANT: Replace with your sub repositories, comma-separated
+        run: |
+          python << EOF
+          import os
+          from github import Github
+          import pandas as pd
+          from datetime import datetime, timedelta
+
+          GITHUB_TOKEN = os.environ.get('GITHUB_TOKEN')
+          MAIN_REPOSITORY = os.environ.get('MAIN_REPOSITORY')
+          SUB_REPOSITORIES = os.environ.get('SUB_REPOSITORIES').split(',')
+          ALL_REPOSITORIES = [MAIN_REPOSITORY] + SUB_REPOSITORIES
+
+          g = Github(GITHUB_TOKEN)
+
+          # Define severity labels and their order (high to low)
+          # IMPORTANT: Adapt these labels to match your GitHub issue labels
+          SEVERITY_ORDER = {
+              "severity: critical": 1,
+              "severity: high": 2,
+              "severity: medium": 3,
+              "severity: low": 4,
+              "severity: minor": 5,
+              "no-severity": 99 # For issues without a recognized severity label
+          }
+
+          # Function to get severity from labels
+          def get_severity(labels):
+              for label in labels:
+                  for sev_label in SEVERITY_ORDER.keys():
+                      if label.name.lower() == sev_label:
+                          return label.name.lower()
+              return "no-severity"
+
+          all_bug_data = []
+          today = datetime.now()
+          three_months_ago = today - timedelta(days=90) # Last 3 months
+
+          print(f"Collecting bug data for repositories: {ALL_REPOSITORIES}")
+
+          for repo_name in ALL_REPOSITORIES:
+              try:
+                  repo = g.get_repo(repo_name.strip())
+                  print(f"Fetching issues for {repo_name}...")
+                  # Filter by state=open and label=bug
+                  # Note: GitHub API issue search doesn't directly support "created after" in get_issues()
+                  # We'll filter in Pandas after fetching.
+                  issues = repo.get_issues(state='open', labels=['bug'])
+
+                  for issue in issues:
+                      if issue.created_at >= three_months_ago:
+                          severity = get_severity(issue.labels)
+                          all_bug_data.append({
+                              'repository': repo_name,
+                              'issue_number': issue.number,
+                              'title': issue.title,
+                              'created_at': issue.created_at.strftime('%Y-%m-%d'),
+                              'severity': severity,
+                              'severity_order': SEVERITY_ORDER.get(severity, 99)
+                          })
+              except Exception as e:
+                  print(f"Error fetching issues for {repo_name}: {e}")
+
+          if not all_bug_data:
+              print("No bug data found in the last 3 months for any repository.")
+              exit()
+
+          df = pd.DataFrame(all_bug_data)
+
+          # Ensure 'created_at' is datetime for proper sorting
+          df['created_at'] = pd.to_datetime(df['created_at'])
+
+          # Create a date range for the last 3 months
+          date_range = pd.date_range(start=three_months_ago.strftime('%Y-%m-%d'), end=today.strftime('%Y-%m-%d'))
+          all_dates_df = pd.DataFrame({'created_at': date_range})
+
+          # Aggregate daily open bugs by severity, for each day
+          # This aggregation counts how many issues were *open on* a given day
+          # This requires a more complex calculation than just creation date
+          # Let's simplify for now to "bugs created and still open on that day"
+          # For "bugs open on that day" (even if created earlier), you'd need to fetch all open bugs
+          # and then check their creation date against the specific day in the date range.
+
+          # Let's pivot the data to get daily counts per severity
+          # This will show how many issues *created on that day* were still open.
+          # To show "issues open on a given day", we need to iterate through each day.
+
+          daily_summary = []
+          for single_date in date_range:
+              date_str = single_date.strftime('%Y-%m-%d')
+              # Filter issues that were created on or before this day and are still open (which we assume from our initial fetch)
+              daily_issues = df[df['created_at'] <= single_date]
+              
+              if not daily_issues.empty:
+                  # Count unique issues for each severity on this specific day
+                  counts = daily_issues.groupby('severity')['issue_number'].nunique().to_dict()
+                  
+                  # Add missing severities with count 0 for completeness
+                  for sev_label in SEVERITY_ORDER.keys():
+                      if sev_label not in counts:
+                          counts[sev_label] = 0
+
+                  # Sort counts by severity order
+                  sorted_counts = dict(sorted(counts.items(), key=lambda item: SEVERITY_ORDER.get(item[0], 99)))
+
+                  # Add to daily_summary
+                  row = {'date': date_str}
+                  row.update(sorted_counts)
+                  daily_summary.append(row)
+              else:
+                  # If no bugs found for the day, add zeros for all severities
+                  row = {'date': date_str}
+                  for sev_label in SEVERITY_ORDER.keys():
+                      row[sev_label] = 0
+                  daily_summary.append(row)
+
+
+          # Convert to DataFrame and sort by date
+          daily_df = pd.DataFrame(daily_summary)
+          daily_df['date'] = pd.to_datetime(daily_df['date'])
+          daily_df = daily_df.sort_values(by='date')
+
+          # Save to CSV
+          output_filename = 'open_bugs_daily_summary.csv'
+          daily_df.to_csv(output_filename, index=False)
+          print(f"Data saved to {output_filename}")
+
+          # You can also save the raw bug data for more detailed analysis if needed
+          # raw_output_filename = 'all_open_bugs_last_3_months.csv'
+          # df.to_csv(raw_output_filename, index=False)
+          # print(f"Raw data saved to {raw_output_filename}")
+
+          EOF
+
+      - name: Upload bug data artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: open-bug-data
+          path: open_bugs_daily_summary.csv
+          retention-days: 90 # Keep artifacts for 3 months
+
+      # Optional: Add another step for visualization if you have a specific tool integration
+      # For example, pushing to a Google Sheet directly using a service account (more complex setup)
+      # Or triggering another workflow that consumes this artifact and builds a dashboard.
