@@ -29,8 +29,8 @@ jobs:
         id: get_bug_data
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # Automatically provided by GitHub
-          MAIN_REPOSITORY: 'anmittagPlayGround/play_score' # IMPORTANT: Replace with your main repository
-          SUB_REPOSITORIES: 'anmittagPlayGround/play_baselibs,anmittagPlayGround/play_communication,anmittagPlayGround/play_persistency' # IMPORTANT: Replace with your sub repositories, comma-separated
+          MAIN_REPOSITORY: anmittagPlayGround/play_score # IMPORTANT: Replace with your main repository
+          SUB_REPOSITORIES: anmittagPlayGround/play_baselibs,anmittagPlayGround/play_communication,anmittagPlayGround/play_persistency # IMPORTANT: Replace with your sub repositories, comma-separated
         run: |
           python << EOF
           import os
